@@ -149,33 +149,25 @@ public class KernelConfigResolver {
     public Map<String, Object> resolve(List<ComponentIdentifier> componentsToDeploy, DeploymentDocument document,
             List<String> rootPackages) throws PackageLoadingException, IOException {
         Map<String, Object> servicesConfig = new HashMap<>();
-        // resolve configuration
         for (ComponentIdentifier componentToDeploy : componentsToDeploy) {
-            servicesConfig.put(componentToDeploy.getName(), getServiceConfig(componentToDeploy, document));
-        }
+            // resolve configuration
+            ComponentRecipe componentRecipe = componentStore.getPackageRecipe(componentToDeploy);
+            servicesConfig.put(componentToDeploy.getName(), getServiceConfig(componentToDeploy, document, (m) -> {
+                if (Coerce.toBoolean(deviceConfiguration.getInterpolateComponentConfiguration())) {
+                    return interpolate(m, componentToDeploy,
+                            componentRecipe.getDependencies().keySet(), servicesConfig);
+                }
+                return m;
+            }));
 
-        // Interpolate configurations
-        for (ComponentIdentifier resolvedComponentsToDeploy : componentsToDeploy) {
-            ComponentRecipe componentRecipe = componentStore.getPackageRecipe(resolvedComponentsToDeploy);
-
-            if (Coerce.toBoolean(deviceConfiguration.getInterpolateComponentConfiguration())) {
-                Object existingConfiguration = ((Map) servicesConfig.get(resolvedComponentsToDeploy.getName()))
-                        .get(CONFIGURATION_CONFIG_KEY);
-
-                Object interpolatedConfiguration = interpolate(existingConfiguration, resolvedComponentsToDeploy,
-                        componentRecipe.getDependencies().keySet(), servicesConfig);
-
-                ((Map) servicesConfig.get(resolvedComponentsToDeploy.getName()))
-                        .put(CONFIGURATION_CONFIG_KEY, interpolatedConfiguration);
-            }
-
-            Object existingLifecycle = ((Map) servicesConfig.get(resolvedComponentsToDeploy.getName()))
+            // Interpolate lifecycle
+            Object existingLifecycle = ((Map) servicesConfig.get(componentToDeploy.getName()))
                     .get(SERVICE_LIFECYCLE_NAMESPACE_TOPIC);
 
-            Object interpolatedLifecycle = interpolate(existingLifecycle, resolvedComponentsToDeploy,
+            Object interpolatedLifecycle = interpolate(existingLifecycle, componentToDeploy,
                                                        componentRecipe.getDependencies().keySet(), servicesConfig);
 
-            ((Map) servicesConfig.get(resolvedComponentsToDeploy.getName()))
+            ((Map) servicesConfig.get(componentToDeploy.getName()))
                     .put(SERVICE_LIFECYCLE_NAMESPACE_TOPIC, interpolatedLifecycle);
         }
 
@@ -193,10 +185,13 @@ public class KernelConfigResolver {
      *
      * @param componentIdentifier         target component id
      * @param document                    deployment doc for the current deployment
+     * @param interpolator                function used to perform configuration interpolation
      * @return a built map representing the kernel config under "services" key for a particular component
      * @throws PackageLoadingException if any service package was unable to be loaded
      */
-    private Map<String, Object> getServiceConfig(ComponentIdentifier componentIdentifier, DeploymentDocument document)
+    private Map<String, Object> getServiceConfig(ComponentIdentifier componentIdentifier,
+                                                 DeploymentDocument document,
+                                                 CrashableFunction<Object, Object, IOException> interpolator)
             throws PackageLoadingException {
 
         ComponentRecipe componentRecipe = componentStore.getPackageRecipe(componentIdentifier);
@@ -238,7 +233,7 @@ public class KernelConfigResolver {
         }
 
         Map<String, Object> resolvedConfiguration = resolveConfigurationToApply(optionalConfigUpdate.orElse(null),
-                componentRecipe, document);
+                componentRecipe, document, interpolator);
 
         // merge resolved param and resolved configuration for backward compatibility
         resolvedServiceConfig
@@ -310,12 +305,13 @@ public class KernelConfigResolver {
      * @param configurationUpdateOperation nullable component configuration update operation.
      * @param componentRecipe              component recipe containing default configuration.
      * @param document                     deployment document
+     * @param interpolator                 function used to interpolate
      * @return resolved configuration for this component. non null.
      */
     @SuppressWarnings("PMD.ConfusingTernary")
     private Map<String, Object> resolveConfigurationToApply(
             @Nullable ConfigurationUpdateOperation configurationUpdateOperation, ComponentRecipe componentRecipe,
-            DeploymentDocument document) {
+            DeploymentDocument document, CrashableFunction<Object, Object, IOException> interpolator) {
 
         // try read the running service config
         try (Context context = new Context()) {
@@ -349,12 +345,13 @@ public class KernelConfigResolver {
                     .map(ComponentConfiguration::getDefaultConfiguration)
                     .orElse(MAPPER.createObjectNode()); // init null to be empty default config
             // Merge in the defaults from the recipe using timestamp 1 to denote a default
-            currentRunningConfig.mergeMap(1, MAPPER.convertValue(defaultConfig, Map.class));
+            currentRunningConfig.mergeMap(1, (Map) interpolator.apply(MAPPER.convertValue(defaultConfig, Map.class)));
             currentRunningConfig.context.waitForPublishQueueToClear();
 
             // Merge in the requested config updates
             if (configurationUpdateOperation != null && configurationUpdateOperation.getValueToMerge() != null) {
-                currentRunningConfig.mergeMap(document.getTimestamp(), configurationUpdateOperation.getValueToMerge());
+                currentRunningConfig.mergeMap(document.getTimestamp(),
+                        (Map) interpolator.apply(configurationUpdateOperation.getValueToMerge()));
             }
 
             return currentRunningConfig.toPOJO();

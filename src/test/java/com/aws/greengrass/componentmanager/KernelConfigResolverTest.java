@@ -24,6 +24,7 @@ import com.aws.greengrass.deployment.model.SystemResourceLimits;
 import com.aws.greengrass.lifecyclemanager.GreengrassService;
 import com.aws.greengrass.lifecyclemanager.Kernel;
 import com.aws.greengrass.testcommons.testutilities.GGExtension;
+import com.aws.greengrass.util.DependencyOrder;
 import com.aws.greengrass.util.NucleusPaths;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -46,8 +47,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
@@ -1308,8 +1311,16 @@ class KernelConfigResolverTest {
         // WHEN
         KernelConfigResolver kernelConfigResolver = new KernelConfigResolver(componentStore, kernel, nucleusPaths,
                 deviceConfiguration);
+
+        // Sort in dependency order
+        Set<ComponentIdentifier> orderedComponentsToResolve =
+                new DependencyOrder<ComponentIdentifier>().computeOrderedDependencies(
+                        new HashSet<>(componentsToResolve.keySet()),
+                        (id) -> componentsToResolve.get(id).getDependencies().keySet().stream()
+                                .map(s -> componentsToResolve.keySet().stream().filter((i) -> i.getName().equals(s))
+                                        .findFirst().get()).collect(Collectors.toSet()));
         Map<String, Object> resolvedConfig =
-                kernelConfigResolver.resolve(new ArrayList<>(componentsToResolve.keySet()), deploymentDocument,
+                kernelConfigResolver.resolve(new ArrayList<>(orderedComponentsToResolve), deploymentDocument,
                         deploymentDocument.getDeploymentPackageConfigurationList().stream().filter(
                                 DeploymentPackageConfiguration::isRootComponent).map(
                                 DeploymentPackageConfiguration::getPackageName).collect(

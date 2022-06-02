@@ -130,20 +130,27 @@ public class DependencyResolver {
             detectCircularDependency(component, resolvedComponents);
         }
 
-        List<ComponentIdentifier> resolvedComponentIdentifiers =  resolvedComponents.entrySet()
-                .stream().map(Map.Entry::getValue).map(md -> md.getComponentIdentifier())
-                .collect(Collectors.toList());
+        Set<ComponentIdentifier> resolvedComponentIdentifiers =  resolvedComponents.entrySet()
+                .stream().map(Map.Entry::getValue).map(ComponentMetadata::getComponentIdentifier)
+                .collect(Collectors.toSet());
 
         checkNonExplicitNucleusUpdate(targetComponentsToResolve, resolvedComponentIdentifiers);
+
+        // Provide the result of this method in sorted dependency order
+        LinkedHashSet<ComponentIdentifier> sortedResolvedComponentIdentifiers =
+                new DependencyOrder<ComponentIdentifier>().computeOrderedDependencies(resolvedComponentIdentifiers,
+                        (id) -> resolvedComponents.get(id.getName()).getDependencies().keySet().stream()
+                                .map(s -> resolvedComponents.get(s).getComponentIdentifier())
+                                .collect(Collectors.toSet()));
 
         logger.atInfo().setEventType("resolve-group-dependencies-finish").kv("resolvedComponents", resolvedComponents)
                 .kv(COMPONENT_VERSION_REQUIREMENT_KEY, componentNameToVersionConstraints)
                 .log("Finish resolving group dependencies");
-        return new ArrayList<>(resolvedComponentIdentifiers);
+        return new ArrayList<>(sortedResolvedComponentIdentifiers);
     }
 
     void checkNonExplicitNucleusUpdate(List<String> targetComponents,
-                                     List<ComponentIdentifier> resolvedComponents) throws PackagingException {
+                                     Iterable<ComponentIdentifier> resolvedComponents) throws PackagingException {
         List<ComponentIdentifier> resolvedNucleusComponents = new ArrayList<>();
         for (ComponentIdentifier componentIdentifier : resolvedComponents) {
             if (ComponentType.NUCLEUS.equals(componentStore.getPackageRecipe(componentIdentifier).getComponentType())) {
@@ -284,7 +291,7 @@ public class DependencyResolver {
 
     private void detectCircularDependency(String targetComponent, Map<String, ComponentMetadata> resolvedComponents)
             throws ComponentVersionNegotiationException {
-        Map<String, Set<String>> componentDependencyMap = new HashMap();
+        Map<String, Set<String>> componentDependencyMap = new HashMap<>();
         Queue<String> componentsToVisit = new LinkedList<>();
         componentsToVisit.add(targetComponent);
         while (!componentsToVisit.isEmpty()) {
